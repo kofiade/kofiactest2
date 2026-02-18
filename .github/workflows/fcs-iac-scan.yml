@@ -1,0 +1,100 @@
+# =====================================================
+# CrowdStrike FCS IaC Scan Workflow
+# =====================================================
+# This workflow scans your Infrastructure as Code files
+# for security misconfigurations using CrowdStrike
+# Falcon Cloud Security.
+# =====================================================
+
+name: "CrowdStrike FCS IaC Scan"
+
+# ----- WHEN DOES THIS RUN? -----
+# 1) When code is pushed to main
+# 2) When a pull request targets main
+# 3) Manually via the "Run workflow" button
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  fcs-iac-scan:
+    name: "FCS IaC Security Scan"
+    runs-on: ubuntu-latest
+
+    # ----- PERMISSIONS -----
+    # These are required for the workflow to:
+    #   - Read your code (contents: read)
+    #   - Upload results to Security tab (security-events: write)
+    #   - Read workflow metadata (actions: read)
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+
+    steps:
+
+      # ===== STEP 1: GET YOUR CODE =====
+      # Downloads your repository code onto the runner
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ===== STEP 2: RUN THE SCAN =====
+      # This is the main step — it calls CrowdStrike to scan your IaC files
+      - name: Run FCS IaC Scan
+        id: fcs
+        uses: crowdstrike/fcs-action@v3.0.0
+        with:
+          # --- Authentication (pulls from your repo settings) ---
+          falcon_client_id: ${{ vars.FALCON_CLIENT_ID }}
+          falcon_region: ${{ vars.FALCON_REGION }}
+
+          # --- What to scan ---
+          scan_type: iac
+          path: './terraform'                    # ⬅️ CHANGE THIS to your IaC folder
+          project_name: 'kofi-test-project'             # ⬅️ CHANGE THIS to your project name
+
+          # --- Reporting ---
+          severities: 'critical,high,medium'     # Which severities to report
+          fail_on: 'critical=1,high=5'           # Fail if: 1+ critical OR 5+ high
+          report_formats: 'sarif,json'           # Generate both SARIF and JSON reports
+          output_path: './scan-results/'         # Where to save reports
+          upload_results: true                   # Also upload to Falcon Console
+        env:
+          FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
+
+      # ===== STEP 3: SAVE REPORTS AS DOWNLOADABLE ARTIFACT =====
+      # Makes the full scan reports available for download from the Actions page
+      - name: Upload scan results as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fcs-scan-results
+          path: ./scan-results/
+          if-no-files-found: warn
+
+      # ===== STEP 4: SHOW RESULTS IN GITHUB SECURITY TAB =====
+      # Uploads SARIF results so findings appear as Code Scanning alerts
+      - name: Upload SARIF to GitHub Code Scanning
+        if: always() && steps.fcs.outputs.exit-code != 0
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ./scan-results/
+
+      # ===== STEP 5: PASS OR FAIL THE CHECK =====
+      # Prints a summary and fails the workflow if vulnerabilities were found
+      - name: Scan Summary
+        if: always()
+        run: |
+          echo "==========================================="
+          echo "  FCS IaC Scan Complete"
+          echo "  Exit Code: ${{ steps.fcs.outputs.exit-code }}"
+          echo "==========================================="
+          if [ "${{ steps.fcs.outputs.exit-code }}" != "0" ]; then
+            echo "❌ SCAN FAILED — Vulnerabilities exceed thresholds!"
+            exit 1
+          else
+            echo "✅ SCAN PASSED — No critical issues found."
+          fi
