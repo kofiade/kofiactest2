@@ -1,0 +1,94 @@
+# =============================================================
+# INTENTIONALLY VULNERABLE DOCKER IMAGE — FOR FCS IMAGE TESTING
+# =============================================================
+# This image is designed to trigger CrowdStrike FCS Image
+# Assessment findings. It uses an old, unpatched base image
+# with known critical CVEs and installs additional vulnerable
+# packages.
+#
+# ⚠️  DO NOT USE IN PRODUCTION — THIS IS FOR TESTING ONLY ⚠️
+# =============================================================
+
+# -------------------------------------------------------
+# 1. OLD BASE IMAGE — contains hundreds of known CVEs
+#    Using a pinned, outdated version guarantees findings
+# -------------------------------------------------------
+FROM ubuntu:20.04
+
+# -------------------------------------------------------
+# 2. INSTALL VULNERABLE PACKAGES
+#    These older packages contain known high/critical CVEs
+# -------------------------------------------------------
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # OpenSSL — older versions have critical CVEs (Heartbleed, etc.)
+    openssl \
+    libssl-dev \
+    # curl/libcurl — multiple known CVEs in older versions
+    curl \
+    libcurl4-openssl-dev \
+    # Python 3 — older patch levels have known vulnerabilities
+    python3 \
+    python3-pip \
+    # Git — older versions have CVEs (e.g., CVE-2022-41903)
+    git \
+    # Wget — known CVEs in older versions
+    wget \
+    # SSH — to trigger critical findings
+    openssh-client \
+    openssh-server \
+    # Networking tools — unnecessary attack surface
+    net-tools \
+    netcat-openbsd \
+    telnet \
+    # Additional packages with known vulnerabilities
+    imagemagick \
+    vim \
+    && rm -rf /var/lib/apt/lists/*
+
+# -------------------------------------------------------
+# 3. INSTALL VULNERABLE PYTHON PACKAGES
+#    Pinned to old versions with known CVEs
+# -------------------------------------------------------
+RUN pip3 install --no-cache-dir \
+    # Flask 2.0.0 has known security issues
+    flask==2.0.0 \
+    # Jinja2 older versions have template injection CVEs
+    jinja2==3.0.0 \
+    # Requests older versions have CVEs
+    requests==2.25.0 \
+    # Werkzeug older versions have security issues
+    werkzeug==2.0.0 \
+    # PyYAML older versions have arbitrary code execution CVEs
+    pyyaml==5.3 \
+    # Cryptography older versions have multiple CVEs
+    cryptography==3.4.0 \
+    # Pillow older versions have buffer overflow CVEs
+    pillow==8.0.0 \
+    # urllib3 older versions have CVEs
+    urllib3==1.26.0 \
+    # setuptools older versions have CVEs
+    setuptools==50.0.0
+
+# -------------------------------------------------------
+# 4. HARDCODED SECRETS (triggers secrets detection)
+# -------------------------------------------------------
+ENV DATABASE_URL="postgresql://admin:P@ssw0rd123@db.internal:5432/production"
+ENV AWS_ACCESS_KEY_ID="AKIAIOSFODNN7EXAMPLE"
+ENV AWS_SECRET_ACCESS_KEY="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+ENV API_TOKEN="ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+# -------------------------------------------------------
+# 5. DOCKERFILE BAD PRACTICES (bonus IaC findings)
+# -------------------------------------------------------
+# No HEALTHCHECK
+# Running as root (no USER directive)
+# Exposing unnecessary ports including SSH
+EXPOSE 22 80 443 3306 5432 8080
+
+# Simple app to keep container running
+RUN echo '#!/bin/bash\necho "Vulnerable test container running"\ntail -f /dev/null' > /start.sh \
+    && chmod +x /start.sh
+
+CMD ["/start.sh"]
