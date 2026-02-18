@@ -1,0 +1,87 @@
+# =====================================================
+# CrowdStrike FCS — Container Image Assessment
+# =====================================================
+# Scans container images for vulnerabilities (CVEs),
+# malware, and can generate SBOM reports.
+# =====================================================
+
+name: "CrowdStrike FCS Image Assessment"
+
+# ----- WHEN DOES THIS RUN? -----
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  fcs-image-scan:
+    name: "FCS Image Security Scan"
+    runs-on: ubuntu-latest
+
+    # Required permissions for code checkout + SARIF upload
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+
+    steps:
+
+      # ----- Step 1: Download your code -----
+      # Needed if building an image from a Dockerfile in the repo
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ----- Step 2 (Optional): Build your Docker image -----
+      # Only needed if scanning a locally-built image
+      # Skip this step if scanning a public/registry image like nginx:latest
+      - name: Build Docker Image
+        run: |
+          docker build -t my-app:latest .       # ⬅️ CHANGE: your Dockerfile path/tag
+
+      # ----- Step 3: Run the CrowdStrike Image scan -----
+      - name: Run FCS Image Assessment
+        id: fcs
+        uses: crowdstrike/fcs-action@v3.0.0
+        with:
+          falcon_client_id: ${{ vars.FALCON_CLIENT_ID }}
+          falcon_region: ${{ vars.FALCON_REGION }}
+          scan_type: image                       # ← Image scan mode
+          image: 'my-app:latest'                 # ⬅️ CHANGE: image to scan
+          report_formats: 'sarif'
+          output_path: './image-scan-results.sarif'
+          upload_results: true                   # Upload to Falcon Console
+        env:
+          FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
+
+      # ----- Step 4: Save reports for download -----
+      - name: Upload scan results as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fcs-image-scan-results
+          path: ./image-scan-results.sarif
+          if-no-files-found: warn
+
+      # ----- Step 5: Push findings to GitHub Security tab -----
+      - name: Upload SARIF to GitHub Code Scanning
+        if: always() && steps.fcs.outputs.exit-code != 0
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ./image-scan-results.sarif
+
+      # ----- Step 6: Pass/Fail decision -----
+      - name: Image Scan Summary
+        if: always()
+        run: |
+          echo "==========================================="
+          echo "  FCS Image Assessment Complete"
+          echo "  Exit Code: ${{ steps.fcs.outputs.exit-code }}"
+          echo "==========================================="
+          if [ "${{ steps.fcs.outputs.exit-code }}" != "0" ]; then
+            echo "❌ IMAGE SCAN FAILED — Vulnerabilities found!"
+            exit 1
+          else
+            echo "✅ IMAGE SCAN PASSED — Image is clean."
+          fi
