@@ -38,7 +38,7 @@ jobs:
       # Skip this step if scanning a public/registry image like nginx:latest
       - name: Build Docker Image
         run: |
-          docker build -t my-app:latest .       # ⬅️ CHANGE: your Dockerfile path/tag
+          docker build -t fcs-test-image:latest -f Dockerfile.image-test .       # ⬅️ CHANGE: your Dockerfile path/tag
 
       # ----- Step 3: Run the CrowdStrike Image scan -----
       - name: Run FCS Image Assessment
@@ -48,7 +48,7 @@ jobs:
           falcon_client_id: ${{ vars.FALCON_CLIENT_ID }}
           falcon_region: ${{ vars.FALCON_REGION }}
           scan_type: image                       # ← Image scan mode
-          image: 'my-app:latest'                 # ⬅️ CHANGE: image to scan
+          image: 'fcs-test-image:latest'                 # ⬅️ CHANGE: image to scan
           report_formats: 'sarif'
           output_path: './image-scan-results.sarif'
           upload_results: true                   # Upload to Falcon Console
