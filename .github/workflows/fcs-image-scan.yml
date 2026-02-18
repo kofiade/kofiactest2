@@ -49,7 +49,7 @@ jobs:
           falcon_region: ${{ vars.FALCON_REGION }}
           scan_type: image                       # ← Image scan mode
           image: 'fcs-test-image:latest'                 # ⬅️ CHANGE: image to scan
-          fail_on: 'critical=1', 'high=1'                  # ← Fail if 1 or more critical and High CVEs found
+          fail_on: 'critical=1','high=1'                  # ← Fail if 1 or more critical and High CVEs found
           report_formats: 'sarif'
           output_path: './image-scan-results.sarif'
           upload_results: true                   # Upload to Falcon Console
