@@ -4,13 +4,6 @@
 # This workflow scans your Infrastructure as Code files
 # for security misconfigurations using CrowdStrike
 # Falcon Cloud Security.
-#
-# Behavior:
-#   - If any step fails unexpectedly (auth error, checkout
-#     failure, etc.), the workflow STOPS immediately.
-#   - Steps 3 & 4 only run after a successful scan execution.
-#   - Step 5 evaluates the scan exit code to determine
-#     pass/fail based on vulnerability thresholds.
 # =====================================================
 
 name: "CrowdStrike FCS IaC Scan"
@@ -44,31 +37,24 @@ jobs:
     steps:
 
       # ===== STEP 1: GET YOUR CODE =====
-      # Downloads your repository code onto the runner.
-      # If this fails, the workflow stops — no `if: always()`.
+      # Downloads your repository code onto the runner
       - name: Checkout code
         uses: actions/checkout@v4
 
       # ===== STEP 2: RUN THE SCAN =====
-      # Calls CrowdStrike to scan your IaC files.
-      # `continue-on-error: true` allows the step to "succeed" even
-      # when the scan finds violations (non-zero exit code), so that
-      # subsequent steps can process the results. However, if the
-      # action fails due to an AUTH error or misconfiguration,
-      # the outcome is captured and checked in Step 3.
+      # This is the main step — it calls CrowdStrike to scan your IaC files
       - name: Run FCS IaC Scan
         id: fcs
-        continue-on-error: true
         uses: crowdstrike/fcs-action@v3.0.0
         with:
           # --- Authentication (pulls from your repo settings) ---
           falcon_client_id: ${{ vars.FALCON_CLIENT_ID }}
-          falcon_region: us-1
+          falcon_region: ${{ vars.FALCON_REGION }}
 
           # --- What to scan ---
           scan_type: iac
           path: './terraform'                    # ⬅️ CHANGE THIS to your IaC folder
-          project_name: 'kofi-test-project'      # ⬅️ CHANGE THIS to your project name
+          project_name: 'kofi-test-project'             # ⬅️ CHANGE THIS to your project name
 
           # --- Reporting ---
           severities: 'critical,high,medium'     # Which severities to report
@@ -79,68 +65,36 @@ jobs:
         env:
           FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
 
-      # ===== STEP 3: STOP IF THE SCAN ACTION ITSELF BROKE =====
-      # If the action failed due to authentication, network, or config
-      # errors (not just policy violations), we abort here.
-      # `outcome` reflects the real result before `continue-on-error`.
-      - name: Verify scan executed successfully
-        if: steps.fcs.outcome == 'failure' && steps.fcs.outputs.exit-code == ''
-        run: |
-          echo "==========================================="
-          echo "  ❌ SCAN DID NOT COMPLETE"
-          echo "==========================================="
-          echo "The FCS action failed before producing results."
-          echo "Common causes:"
-          echo "  • Invalid or missing FALCON_CLIENT_ID"
-          echo "  • Invalid or missing FALCON_CLIENT_SECRET"
-          echo "  • Incorrect FALCON_REGION"
-          echo "  • Network connectivity issues"
-          echo "  • Invalid scan path or configuration"
-          echo ""
-          echo "Check the Step 2 logs above for details."
-          echo "==========================================="
-          exit 1
-
-      # ===== STEP 4: SAVE REPORTS AS DOWNLOADABLE ARTIFACT =====
-      # Only runs if the scan actually produced results.
+      # ===== STEP 3: SAVE REPORTS AS DOWNLOADABLE ARTIFACT =====
+      # Makes the full scan reports available for download from the Actions page
       - name: Upload scan results as artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: fcs-scan-results
           path: ./scan-results/
           if-no-files-found: warn
 
-      # ===== STEP 5: SHOW RESULTS IN GITHUB SECURITY TAB =====
-      # Uploads SARIF results so findings appear as Code Scanning alerts.
-      # Only uploads when the scan found violations (non-zero exit code).
+      # ===== STEP 4: SHOW RESULTS IN GITHUB SECURITY TAB =====
+      # Uploads SARIF results so findings appear as Code Scanning alerts
       - name: Upload SARIF to GitHub Code Scanning
-        if: steps.fcs.outputs.exit-code != '0'
+        if: always() && steps.fcs.outputs.exit-code != 0
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: ./scan-results/
 
-      # ===== STEP 6: PASS OR FAIL BASED ON EXIT CODE =====
-      # This step ONLY evaluates the scan's exit code.
-      # Exit code meanings:
-      #   0  = No violations found above thresholds → PASS
-      #   !0 = Violations exceed thresholds         → FAIL
-      - name: Evaluate scan results
+      # ===== STEP 5: PASS OR FAIL THE CHECK =====
+      # Prints a summary and fails the workflow if vulnerabilities were found
+      - name: Scan Summary
+        if: always()
         run: |
-          EXIT_CODE="${{ steps.fcs.outputs.exit-code }}"
           echo "==========================================="
-          echo "  FCS IaC Scan — Results"
+          echo "  FCS IaC Scan Complete"
+          echo "  Exit Code: ${{ steps.fcs.outputs.exit-code }}"
           echo "==========================================="
-          echo "  Exit Code: ${EXIT_CODE}"
-          echo "-------------------------------------------"
-          if [ "${EXIT_CODE}" != "0" ]; then
-            echo "  ❌ FAILED"
-            echo "  Vulnerabilities found that exceed the"
-            echo "  configured thresholds (critical=1, high=5)."
-            echo "==========================================="
+          if [ "${{ steps.fcs.outputs.exit-code }}" != "0" ]; then
+            echo "❌ SCAN FAILED"
             exit 1
           else
-            echo "  ✅ PASSED"
-            echo "  No issues exceeding the configured"
-            echo "  severity thresholds were detected."
-            echo "==========================================="
+            echo "✅ SCAN PASSED — No critical issues found."
           fi
