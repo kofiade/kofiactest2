@@ -29,16 +29,13 @@ jobs:
     steps:
 
       # ----- Step 1: Download your code -----
-      # Needed if building an image from a Dockerfile in the repo
       - name: Checkout code
         uses: actions/checkout@v4
 
       # ----- Step 2 (Optional): Build your Docker image -----
-      # Only needed if scanning a locally-built image
-      # Skip this step if scanning a public/registry image like nginx:latest
       - name: Build Docker Image
         run: |
-          docker build -t fcs-test-image:latest -f Dockerfile.image-test .       # ⬅️ CHANGE: your Dockerfile path/tag
+          docker build -t fcs-test-image:latest -f Dockerfile.image-test .      # ⬅️ CHANGE: your Dockerfile path/tag
 
       # ----- Step 3: Run the CrowdStrike Image scan -----
       - name: Run FCS Image Assessment
@@ -47,16 +44,25 @@ jobs:
         with:
           falcon_client_id: ${{ vars.FALCON_CLIENT_ID }}
           falcon_region: ${{ vars.FALCON_REGION }}
-          scan_type: image                       # ← Image scan mode
+          scan_type: image
           image: 'fcs-test-image:latest'                 # ⬅️ CHANGE: image to scan
-          fail_on: 'critical=1,high=1'                  # ← Fail if 1 or more critical and High CVEs found
+          minimum_severity: high                 # ← Report high + critical CVEs
           report_formats: 'sarif'
           output_path: './image-scan-results.sarif'
-          upload_results: true                   # Upload to Falcon Console
+          upload_results: true
         env:
           FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
 
-      # ----- Step 4: Save reports for download -----
+      # ----- Step 4: DEBUG — Check exit code and output -----
+      - name: Debug Exit Code
+        if: always()
+        run: |
+          echo "==========================================="
+          echo "  FCS Action Step Exit Code: $?"
+          echo "  FCS CLI Output Exit Code:  ${{ steps.fcs.outputs.exit-code }}"
+          echo "==========================================="
+
+      # ----- Step 5: Save reports for download -----
       - name: Upload scan results as artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -65,27 +71,40 @@ jobs:
           path: ./image-scan-results.sarif
           if-no-files-found: warn
 
-      # ----- Step 5: Push findings to GitHub Security tab -----
+      # ----- Step 6: Push findings to GitHub Security tab -----
       - name: Upload SARIF to GitHub Code Scanning
         if: always() && steps.fcs.outputs.exit-code != 0
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: ./image-scan-results.sarif
 
-      # ----- Step 6: Pass/Fail decision -----
+      # ----- Step 7: ENFORCE — Fail the workflow based on exit-code -----
+      # This is the critical step: the FCS action itself always exits 0,
+      # but it sets outputs.exit-code to non-zero when vulns are found.
+      # We must MANUALLY fail the workflow based on that output.
       - name: Image Scan Summary
         if: always()
         run: |
+          EXIT_CODE="${{ steps.fcs.outputs.exit-code }}"
           echo "==========================================="
           echo "  FCS Image Assessment Complete"
-          echo "  Exit Code: ${{ steps.fcs.outputs.exit-code }}"
-          echo "  Policy: fail_on critical=1"
+          echo "  FCS CLI Exit Code: ${EXIT_CODE}"
+          echo "  Policy: minimum_severity=high"
           echo "==========================================="
-          if [ "${{ steps.fcs.outputs.exit-code }}" != "0" ]; then
-            echo "❌ IMAGE SCAN FAILED — Critical vulnerabilities detected!"
-            echo "The image contains 1 or more CRITICAL severity CVEs."
-            echo "Review findings in the Security tab or download the artifact."
+
+          # Handle empty exit code (action may not have set it)
+          if [ -z "${EXIT_CODE}" ]; then
+            echo "⚠️  WARNING: exit-code output is empty."
+            echo "   The FCS action may not have produced an exit code."
+            echo "   Check the 'Run FCS Image Assessment' step logs above."
+            exit 1
+          fi
+
+          if [ "${EXIT_CODE}" != "0" ]; then
+            echo "❌ IMAGE SCAN FAILED — Critical or High vulnerabilities detected!"
+            echo "   The image contains vulnerabilities at or above HIGH severity."
+            echo "   Review findings in the Security tab or download the artifact."
             exit 1
           else
-            echo "✅ IMAGE SCAN PASSED — No critical vulnerabilities found."
+            echo "✅ IMAGE SCAN PASSED — No critical or high vulnerabilities found."
           fi
