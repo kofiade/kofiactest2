@@ -1,94 +1,110 @@
-# =============================================================
-# INTENTIONALLY VULNERABLE DOCKER IMAGE — FOR FCS IMAGE TESTING
-# =============================================================
-# This image is designed to trigger CrowdStrike FCS Image
-# Assessment findings. It uses an old, unpatched base image
-# with known critical CVEs and installs additional vulnerable
-# packages.
-#
-# ⚠️  DO NOT USE IN PRODUCTION — THIS IS FOR TESTING ONLY ⚠️
-# =============================================================
+# =====================================================
+# CrowdStrike FCS — Container Image Assessment
+# =====================================================
+# Scans container images for vulnerabilities (CVEs),
+# malware, and can generate SBOM reports.
+# =====================================================
 
-# -------------------------------------------------------
-# 1. OLD BASE IMAGE — contains hundreds of known CVEs
-#    Using a pinned, outdated version guarantees findings
-# -------------------------------------------------------
-FROM ubuntu:20.04
+name: "CrowdStrike FCS Image Assessment"
 
-# -------------------------------------------------------
-# 2. INSTALL VULNERABLE PACKAGES
-#    These older packages contain known high/critical CVEs
-# -------------------------------------------------------
-ENV DEBIAN_FRONTEND=noninteractive
+# ----- WHEN DOES THIS RUN? -----
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    # OpenSSL — older versions have critical CVEs (Heartbleed, etc.)
-    openssl \
-    libssl-dev \
-    # curl/libcurl — multiple known CVEs in older versions
-    curl \
-    libcurl4-openssl-dev \
-    # Python 3 — older patch levels have known vulnerabilities
-    python3 \
-    python3-pip \
-    # Git — older versions have CVEs (e.g., CVE-2022-41903)
-    git \
-    # Wget — known CVEs in older versions
-    wget \
-    # SSH — to trigger critical findings
-    openssh-client \
-    openssh-server \
-    # Networking tools — unnecessary attack surface
-    net-tools \
-    netcat-openbsd \
-    telnet \
-    # Additional packages with known vulnerabilities
-    imagemagick \
-    vim \
-    && rm -rf /var/lib/apt/lists/*
+jobs:
+  fcs-image-scan:
+    name: "FCS Image Security Scan"
+    runs-on: ubuntu-latest
 
-# -------------------------------------------------------
-# 3. INSTALL VULNERABLE PYTHON PACKAGES
-#    Pinned to old versions with known CVEs
-# -------------------------------------------------------
-RUN pip3 install --no-cache-dir \
-    # Flask 2.0.0 has known security issues
-    flask==2.0.0 \
-    # Jinja2 older versions have template injection CVEs
-    jinja2==3.0.0 \
-    # Requests older versions have CVEs
-    requests==2.25.0 \
-    # Werkzeug older versions have security issues
-    werkzeug==2.0.0 \
-    # PyYAML older versions have arbitrary code execution CVEs
-    pyyaml==5.3 \
-    # Cryptography older versions have multiple CVEs
-    cryptography==3.4.0 \
-    # Pillow older versions have buffer overflow CVEs
-    pillow==8.0.0 \
-    # urllib3 older versions have CVEs
-    urllib3==1.26.0 \
-    # setuptools older versions have CVEs
-    setuptools==50.0.0
+    # Required permissions for code checkout + SARIF upload
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
 
-# -------------------------------------------------------
-# 4. HARDCODED SECRETS (triggers secrets detection)
-# -------------------------------------------------------
-ENV DATABASE_URL="postgresql://admin:P@ssw0rd123@db.internal:5432/production"
-ENV AWS_ACCESS_KEY_ID="AKIAIOSFODNN7EXAMPLE"
-ENV AWS_SECRET_ACCESS_KEY="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-ENV API_TOKEN="ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    steps:
 
-# -------------------------------------------------------
-# 5. DOCKERFILE BAD PRACTICES (bonus IaC findings)
-# -------------------------------------------------------
-# No HEALTHCHECK
-# Running as root (no USER directive)
-# Exposing unnecessary ports including SSH
-EXPOSE 22 80 443 3306 5432 8080
+      # ----- Step 1: Download your code -----
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-# Simple app to keep container running
-RUN echo '#!/bin/bash\necho "Vulnerable test container running"\ntail -f /dev/null' > /start.sh \
-    && chmod +x /start.sh
+      # ----- Step 2 (Optional): Build your Docker image -----
+      - name: Build Docker Image
+        run: |
+          docker build -t fcs-test-image:latest -f Dockerfile.image-test .     # ⬅️ CHANGE: your Dockerfile path/tag
 
-CMD ["/start.sh"]
+      # ----- Step 3: Run the CrowdStrike Image scan -----
+      - name: Run FCS Image Assessment
+        id: fcs
+        uses: crowdstrike/fcs-action@v3.0.0
+        with:
+          falcon_client_id: ${{ vars.FALCON_CLIENT_ID }}
+          falcon_region: ${{ vars.FALCON_REGION }}
+          scan_type: image
+          image: 'fcs-test-image:latest'                # ⬅️ CHANGE: image to scan
+          minimum_severity: high                 # ← Report high + critical CVEs
+          report_formats: 'sarif'
+          output_path: './image-scan-results.sarif'
+          upload_results: true
+        env:
+          FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
+
+      # ----- Step 4: DEBUG — Check exit code and output -----
+      - name: Debug Exit Code
+        if: always()
+        run: |
+          echo "==========================================="
+          echo "  FCS Action Step Exit Code: $?"
+          echo "  FCS CLI Output Exit Code:  ${{ steps.fcs.outputs.exit-code }}"
+          echo "==========================================="
+
+      # ----- Step 5: Save reports for download -----
+      - name: Upload scan results as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fcs-image-scan-results
+          path: ./image-scan-results.sarif
+          if-no-files-found: warn
+
+      # ----- Step 6: Push findings to GitHub Security tab -----
+      - name: Upload SARIF to GitHub Code Scanning
+        if: always() && steps.fcs.outputs.exit-code != 0
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ./image-scan-results.sarif
+
+      # ----- Step 7: ENFORCE — Fail the workflow based on exit-code -----
+      # This is the critical step: the FCS action itself always exits 0,
+      # but it sets outputs.exit-code to non-zero when vulns are found.
+      # We must MANUALLY fail the workflow based on that output.
+      - name: Image Scan Summary
+        if: always()
+        run: |
+          EXIT_CODE="${{ steps.fcs.outputs.exit-code }}"
+          echo "==========================================="
+          echo "  FCS Image Assessment Complete"
+          echo "  FCS CLI Exit Code: ${EXIT_CODE}"
+          echo "  Policy: minimum_severity=high"
+          echo "==========================================="
+
+          # Handle empty exit code (action may not have set it)
+          if [ -z "${EXIT_CODE}" ]; then
+            echo "⚠️  WARNING: exit-code output is empty."
+            echo "   The FCS action may not have produced an exit code."
+            echo "   Check the 'Run FCS Image Assessment' step logs above."
+            exit 1
+          fi
+
+          if [ "${EXIT_CODE}" != "0" ]; then
+            echo "❌ IMAGE SCAN FAILED — Critical or High vulnerabilities detected!"
+            echo "   The image contains vulnerabilities at or above HIGH severity."
+            echo "   Review findings in the Security tab or download the artifact."
+            exit 1
+          else
+            echo "✅ IMAGE SCAN PASSED — No critical or high vulnerabilities found."
+          fi
