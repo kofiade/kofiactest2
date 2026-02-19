@@ -3,6 +3,8 @@
 # =====================================================
 # Scans container images for vulnerabilities (CVEs),
 # malware, and can generate SBOM reports.
+#
+# Policy: Fail when ≥1 critical OR ≥1 high vulnerability found
 # =====================================================
 
 name: "CrowdStrike FCS Image Assessment"
@@ -47,12 +49,12 @@ jobs:
         with:
           falcon_client_id: ${{ vars.FALCON_CLIENT_ID }}
           falcon_region: ${{ vars.FALCON_REGION }}
-          scan_type: image                       # ← Image scan mode
-          image: 'fcs-test-image:latest'                 # ⬅️ CHANGE: image to scan
-          fail_on: 'critical=1,high=1'                  # ← Fail if 1 or more critical and High CVEs found
+          scan_type: image
+          image: 'fcs-test-image:latest'
+          minimum_severity: high
           report_formats: 'sarif'
           output_path: './image-scan-results.sarif'
-          upload_results: true                   # Upload to Falcon Console
+          upload_results: true
         env:
           FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
 
@@ -72,20 +74,45 @@ jobs:
         with:
           sarif_file: ./image-scan-results.sarif
 
-      # ----- Step 6: Pass/Fail decision -----
-      - name: Image Scan Summary
+      # ----- Step 6: Enforce policy — fail on ≥1 critical or ≥1 high -----
+      - name: "Enforce Policy: critical=1, high=1"
         if: always()
         run: |
+          EXIT_CODE="${{ steps.fcs.outputs.exit-code }}"
+
           echo "==========================================="
-          echo "  FCS Image Assessment Complete"
-          echo "  Exit Code: ${{ steps.fcs.outputs.exit-code }}"
-          echo "  Policy: fail_on critical=1"
+          echo "  FCS Image Assessment — Policy Check"
           echo "==========================================="
-          if [ "${{ steps.fcs.outputs.exit-code }}" != "0" ]; then
-            echo "❌ IMAGE SCAN FAILED — Critical vulnerabilities detected!"
-            echo "The image contains 1 or more CRITICAL severity CVEs."
-            echo "Review findings in the Security tab or download the artifact."
+          echo "  FCS CLI Exit Code : ${EXIT_CODE}"
+          echo "  Policy            : Fail on ≥1 critical OR ≥1 high"
+          echo "  Image Scanned     : fcs-test-image:latest"
+          echo "==========================================="
+
+          if [ -z "${EXIT_CODE}" ]; then
+            echo ""
+            echo "⚠️  EXIT CODE IS EMPTY"
+            echo "   The FCS action did not produce an exit-code output."
+            echo "   Check the 'Run FCS Image Assessment' step logs."
+            echo ""
+            echo "❌ FAILING WORKFLOW — unable to verify image safety."
+            exit 1
+          fi
+
+          if [ "${EXIT_CODE}" != "0" ]; then
+            echo ""
+            echo "🔴 VULNERABILITIES DETECTED"
+            echo "   The image contains ≥1 critical or ≥1 high CVEs."
+            echo ""
+            echo "   Next steps:"
+            echo "   1. Check the Security tab for detailed findings"
+            echo "   2. Download the 'fcs-image-scan-results' artifact"
+            echo "   3. Review in the Falcon Console"
+            echo ""
+            echo "❌ IMAGE SCAN FAILED — Merge blocked."
             exit 1
           else
-            echo "✅ IMAGE SCAN PASSED — No critical vulnerabilities found."
+            echo ""
+            echo "🟢 NO HIGH/CRITICAL VULNERABILITIES FOUND"
+            echo ""
+            echo "✅ IMAGE SCAN PASSED — Safe to proceed."
           fi
