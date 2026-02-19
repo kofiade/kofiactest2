@@ -83,4 +83,18 @@ jobs:
         with:
           sarif_file: ./scan-results/
 
-  
+      # ===== STEP 5: PASS OR FAIL THE CHECK =====
+      # Prints a summary and fails the workflow if vulnerabilities were found
+      - name: Scan Summary
+        if: always()
+        run: |
+          echo "==========================================="
+          echo "  FCS IaC Scan Complete"
+          echo "  Exit Code: ${{ steps.fcs.outputs.exit-code }}"
+          echo "==========================================="
+          if [ "${{ steps.fcs.outputs.exit-code }}" != "0" ]; then
+            echo "❌ SCAN FAILED — Vulnerabilities exceed thresholds!"
+            exit 1
+          else
+            echo "✅ SCAN PASSED — No critical issues found."
+          fi
