@@ -1,124 +1,49 @@
-name: "CrowdStrike FCS Image Assessment"
+# =============================================================
+# INTENTIONALLY VULNERABLE DOCKER IMAGE — FOR FCS IMAGE TESTING
+# =============================================================
+# ⚠️  DO NOT USE IN PRODUCTION — THIS IS FOR TESTING ONLY ⚠️
+# =============================================================
 
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
+FROM ubuntu:20.04
 
-jobs:
-  fcs-image-scan:
-    name: "FCS Image Security Scan"
-    runs-on: ubuntu-latest
+ENV DEBIAN_FRONTEND=noninteractive
 
-    permissions:
-      contents: read
-      security-events: write
-      actions: read
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssl \
+    libssl-dev \
+    curl \
+    libcurl4-openssl-dev \
+    python3 \
+    python3-pip \
+    git \
+    wget \
+    openssh-client \
+    openssh-server \
+    net-tools \
+    netcat-openbsd \
+    telnet \
+    imagemagick \
+    vim \
+    && rm -rf /var/lib/apt/lists/*
 
-    steps:
+RUN pip3 install --no-cache-dir \
+    flask==2.0.0 \
+    jinja2==3.0.0 \
+    requests==2.25.0 \
+    werkzeug==2.0.0 \
+    pyyaml==5.3 \
+    cryptography==3.4.0 \
+    pillow==8.0.0 \
+    urllib3==1.26.0 \
+    setuptools==50.0.0
 
-      - name: Checkout code
-        uses: actions/checkout@v4
+ENV DATABASE_URL="postgresql://admin:P@ssw0rd123@db.internal:5432/production"
+ENV AWS_ACCESS_KEY_ID="AKIAIOSFODNN7EXAMPLE"
+ENV AWS_SECRET_ACCESS_KEY="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 
-      - name: Build Docker Image
-        run: |
-          docker build -t fcs-test-image:latest -f Dockerfile.image-test .
+EXPOSE 22 80 443 3306 5432 8080
 
-      - name: Run FCS Image Assessment
-        id: fcs
-        uses: crowdstrike/fcs-action@v3.0.0
-        with:
-          falcon_client_id: ${{ vars.FALCON_CLIENT_ID }}
-          falcon_region: ${{ vars.FALCON_REGION }}
-          scan_type: image
-          image: 'fcs-test-image:latest'
-          minimum_severity: high
-          report_formats: 'json'
-          output_path: './image-scan-results.json'
-          upload_results: true
-        env:
-          FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
+RUN echo '#!/bin/bash\necho "Vulnerable test container running"\ntail -f /dev/null' > /start.sh \
+    && chmod +x /start.sh
 
-      - name: Debug Exit Code
-        if: always()
-        run: |
-          echo "==========================================="
-          echo "  FCS CLI Exit Code: ${{ steps.fcs.outputs.exit-code }}"
-          echo "==========================================="
-          if [ -f "./image-scan-results.json" ]; then
-            echo "=== JSON report preview ==="
-            head -100 ./image-scan-results.json
-          fi
-
-      - name: Upload scan results as artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fcs-image-scan-results
-          path: ./image-scan-results.*
-          if-no-files-found: warn
-
-      - name: Run FCS Image Scan (SARIF)
-        id: fcs-sarif
-        if: always() && steps.fcs.outputs.exit-code != 0
-        uses: crowdstrike/fcs-action@v3.0.0
-        with:
-          falcon_client_id: ${{ vars.FALCON_CLIENT_ID }}
-          falcon_region: ${{ vars.FALCON_REGION }}
-          scan_type: image
-          image: 'fcs-test-image:latest'
-          minimum_severity: high
-          report_formats: 'sarif'
-          output_path: './image-scan-results.sarif'
-        env:
-          FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
-
-      - name: Upload SARIF to GitHub Code Scanning
-        if: always() && steps.fcs.outputs.exit-code != 0
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: ./image-scan-results.sarif
-
-      - name: "Enforce Policy: critical=1, high=1"
-        if: always()
-        run: |
-          EXIT_CODE="${{ steps.fcs.outputs.exit-code }}"
-
-          echo "==========================================="
-          echo "  FCS Image Assessment — Policy Check"
-          echo "==========================================="
-          echo "  FCS CLI Exit Code : ${EXIT_CODE}"
-          echo "  Policy            : Fail on ≥1 critical OR ≥1 high"
-          echo "  Image Scanned     : fcs-test-image:latest"
-          echo "==========================================="
-
-          if [ -z "${EXIT_CODE}" ]; then
-            echo ""
-            echo "⚠️  EXIT CODE IS EMPTY"
-            echo "   The FCS action did not produce an exit-code output."
-            echo "   Check the 'Run FCS Image Assessment' step logs."
-            echo ""
-            echo "❌ FAILING WORKFLOW — unable to verify image safety."
-            exit 1
-          fi
-
-          if [ "${EXIT_CODE}" != "0" ]; then
-            echo ""
-            echo "🔴 VULNERABILITIES DETECTED"
-            echo "   The image contains ≥1 critical or ≥1 high CVEs."
-            echo ""
-            echo "   Next steps:"
-            echo "   1. Check the Security tab for detailed findings"
-            echo "   2. Download the 'fcs-image-scan-results' artifact"
-            echo "   3. Review in the Falcon Console"
-            echo ""
-            echo "❌ IMAGE SCAN FAILED — Merge blocked."
-            exit 1
-          else
-            echo ""
-            echo "🟢 NO HIGH/CRITICAL VULNERABILITIES FOUND"
-            echo ""
-            echo "✅ IMAGE SCAN PASSED — Safe to proceed."
-          fi
+CMD ["/start.sh"]
