@@ -35,7 +35,7 @@ jobs:
       # ----- Step 2 (Optional): Build your Docker image -----
       - name: Build Docker Image
         run: |
-          docker build -t fcs-test-image:latest -f Dockerfile.image-test .      # ⬅️ CHANGE: your Dockerfile path/tag
+          docker build -t fcs-test-image:latest -f Dockerfile.image-test .
 
       # ----- Step 3: Run the CrowdStrike Image scan -----
       - name: Run FCS Image Assessment
@@ -45,8 +45,8 @@ jobs:
           falcon_client_id: ${{ vars.FALCON_CLIENT_ID }}
           falcon_region: ${{ vars.FALCON_REGION }}
           scan_type: image
-          image: 'fcs-test-image:latest'                 # ⬅️ CHANGE: image to scan
-          minimum_severity: high                 # ← Report high + critical CVEs
+          image: 'fcs-test-image:latest'
+          minimum_severity: high
           report_formats: 'sarif'
           output_path: './image-scan-results.sarif'
           upload_results: true
@@ -58,7 +58,6 @@ jobs:
         if: always()
         run: |
           echo "==========================================="
-          echo "  FCS Action Step Exit Code: $?"
           echo "  FCS CLI Output Exit Code:  ${{ steps.fcs.outputs.exit-code }}"
           echo "==========================================="
 
@@ -79,9 +78,6 @@ jobs:
           sarif_file: ./image-scan-results.sarif
 
       # ----- Step 7: ENFORCE — Fail the workflow based on exit-code -----
-      # This is the critical step: the FCS action itself always exits 0,
-      # but it sets outputs.exit-code to non-zero when vulns are found.
-      # We must MANUALLY fail the workflow based on that output.
       - name: Image Scan Summary
         if: always()
         run: |
@@ -92,7 +88,6 @@ jobs:
           echo "  Policy: minimum_severity=high"
           echo "==========================================="
 
-          # Handle empty exit code (action may not have set it)
           if [ -z "${EXIT_CODE}" ]; then
             echo "⚠️  WARNING: exit-code output is empty."
             echo "   The FCS action may not have produced an exit code."
@@ -108,3 +103,11 @@ jobs:
           else
             echo "✅ IMAGE SCAN PASSED — No critical or high vulnerabilities found."
           fi
+
+      # ----- Step 8: Push the image only if scan passed -----
+      - name: Push Docker Image
+        if: success()
+        run: |
+          # docker tag fcs-test-image:latest your-registry.com/fcs-test-image:latest
+          # docker push your-registry.com/fcs-test-image:latest
+          echo "Image push would happen here"
