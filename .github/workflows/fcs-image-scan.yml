@@ -1,13 +1,17 @@
 # =====================================================
-# CrowdStrike FCS — Container Image Assessment
+# CrowdStrike FCS IaC Scan Workflow
 # =====================================================
-# Scans container images for vulnerabilities (CVEs),
-# malware, and can generate SBOM reports.
+# This workflow scans your Infrastructure as Code files
+# for security misconfigurations using CrowdStrike
+# Falcon Cloud Security.
 # =====================================================
 
-name: "CrowdStrike FCS Image Assessment"
+name: "CrowdStrike FCS IaC Scan"
 
 # ----- WHEN DOES THIS RUN? -----
+# 1) When code is pushed to main
+# 2) When a pull request targets main
+# 3) Manually via the "Run workflow" button
 on:
   push:
     branches: [main]
@@ -16,11 +20,15 @@ on:
   workflow_dispatch:
 
 jobs:
-  fcs-image-scan:
-    name: "FCS Image Security Scan"
+  fcs-iac-scan:
+    name: "FCS IaC Security Scan"
     runs-on: ubuntu-latest
 
-    # Required permissions for code checkout + SARIF upload
+    # ----- PERMISSIONS -----
+    # These are required for the workflow to:
+    #   - Read your code (contents: read)
+    #   - Upload results to Security tab (security-events: write)
+    #   - Read workflow metadata (actions: read)
     permissions:
       contents: read
       security-events: write
@@ -28,86 +36,65 @@ jobs:
 
     steps:
 
-      # ----- Step 1: Download your code -----
+      # ===== STEP 1: GET YOUR CODE =====
+      # Downloads your repository code onto the runner
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ----- Step 2 (Optional): Build your Docker image -----
-      - name: Build Docker Image
-        run: |
-          docker build -t fcs-test-image:latest -f Dockerfile.image-test .
-
-      # ----- Step 3: Run the CrowdStrike Image scan -----
-      - name: Run FCS Image Assessment
+      # ===== STEP 2: RUN THE SCAN =====
+      # This is the main step — it calls CrowdStrike to scan your IaC files
+      - name: Run FCS IaC Scan
         id: fcs
         uses: crowdstrike/fcs-action@v3.0.0
         with:
+          # --- Authentication (pulls from your repo settings) ---
           falcon_client_id: ${{ vars.FALCON_CLIENT_ID }}
           falcon_region: ${{ vars.FALCON_REGION }}
-          scan_type: image
-          image: 'fcs-test-image:latest'
-          minimum_severity: high
-          report_formats: 'sarif'
-          output_path: './image-scan-results.sarif'
-          upload_results: true
+
+          # --- What to scan ---
+          scan_type: iac
+          path: './terraform'                    # ⬅️ CHANGE THIS to your IaC folder
+          project_name: 'kofi-test-project'             # ⬅️ CHANGE THIS to your project name
+
+          # --- Reporting ---
+          severities: 'critical,high,medium'     # Which severities to report
+          fail_on: 'critical=1,high=5'           # Fail if: 1+ critical OR 5+ high
+          report_formats: 'sarif,json'           # Generate both SARIF and JSON reports
+          output_path: './scan-results/'         # Where to save reports
+          upload_results: true                   # Also upload to Falcon Console
         env:
           FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
 
-      # ----- Step 4: DEBUG — Check exit code and output -----
-      - name: Debug Exit Code
-        if: always()
-        run: |
-          echo "==========================================="
-          echo "  FCS CLI Output Exit Code:  ${{ steps.fcs.outputs.exit-code }}"
-          echo "==========================================="
-
-      # ----- Step 5: Save reports for download -----
+      # ===== STEP 3: SAVE REPORTS AS DOWNLOADABLE ARTIFACT =====
+      # Makes the full scan reports available for download from the Actions page
       - name: Upload scan results as artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fcs-image-scan-results
-          path: ./image-scan-results.sarif
+          name: fcs-scan-results
+          path: ./scan-results/
           if-no-files-found: warn
 
-      # ----- Step 6: Push findings to GitHub Security tab -----
+      # ===== STEP 4: SHOW RESULTS IN GITHUB SECURITY TAB =====
+      # Uploads SARIF results so findings appear as Code Scanning alerts
       - name: Upload SARIF to GitHub Code Scanning
         if: always() && steps.fcs.outputs.exit-code != 0
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: ./image-scan-results.sarif
+          sarif_file: ./scan-results/
 
-      # ----- Step 7: ENFORCE — Fail the workflow based on exit-code -----
-      - name: Image Scan Summary
+      # ===== STEP 5: PASS OR FAIL THE CHECK =====
+      # Prints a summary and fails the workflow if vulnerabilities were found
+      - name: Scan Summary
         if: always()
         run: |
-          EXIT_CODE="${{ steps.fcs.outputs.exit-code }}"
           echo "==========================================="
-          echo "  FCS Image Assessment Complete"
-          echo "  FCS CLI Exit Code: ${EXIT_CODE}"
-          echo "  Policy: minimum_severity=high"
+          echo "  FCS IaC Scan Complete"
+          echo "  Exit Code: ${{ steps.fcs.outputs.exit-code }}"
           echo "==========================================="
-
-          if [ -z "${EXIT_CODE}" ]; then
-            echo "⚠️  WARNING: exit-code output is empty."
-            echo "   The FCS action may not have produced an exit code."
-            echo "   Check the 'Run FCS Image Assessment' step logs above."
-            exit 1
-          fi
-
-          if [ "${EXIT_CODE}" != "0" ]; then
-            echo "❌ IMAGE SCAN FAILED — Critical or High vulnerabilities detected!"
-            echo "   The image contains vulnerabilities at or above HIGH severity."
-            echo "   Review findings in the Security tab or download the artifact."
+          if [ "${{ steps.fcs.outputs.exit-code }}" != "0" ]; then
+            echo "❌ SCAN FAILED — Vulnerabilities exceed thresholds!"
             exit 1
           else
-            echo "✅ IMAGE SCAN PASSED — No critical or high vulnerabilities found."
+            echo "✅ SCAN PASSED — No critical issues found."
           fi
-
-      # ----- Step 8: Push the image only if scan passed -----
-      - name: Push Docker Image
-        if: success()
-        run: |
-          # docker tag fcs-test-image:latest your-registry.com/fcs-test-image:latest
-          # docker push your-registry.com/fcs-test-image:latest
-          echo "Image push would happen here"
