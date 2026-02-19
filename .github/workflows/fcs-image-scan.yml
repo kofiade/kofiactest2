@@ -49,7 +49,7 @@ jobs:
         with:
           # --- Authentication (pulls from your repo settings) ---
           falcon_client_id: ${{ vars.FALCON_CLIENT_ID }}
-          falcon_region: ${{ vars.FALCON_REGION }}
+          falcon_region: us-1
 
           # --- What to scan ---
           scan_type: iac
