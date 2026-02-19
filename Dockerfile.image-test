@@ -1,13 +1,5 @@
-# =====================================================
-# CrowdStrike FCS — Container Image Assessment
-# =====================================================
-# Scans container images for vulnerabilities (CVEs),
-# malware, and can generate SBOM reports.
-# =====================================================
-
 name: "CrowdStrike FCS Image Assessment"
 
-# ----- WHEN DOES THIS RUN? -----
 on:
   push:
     branches: [main]
@@ -20,7 +12,6 @@ jobs:
     name: "FCS Image Security Scan"
     runs-on: ubuntu-latest
 
-    # Required permissions for code checkout + SARIF upload
     permissions:
       contents: read
       security-events: write
@@ -28,16 +19,13 @@ jobs:
 
     steps:
 
-      # ----- Step 1: Download your code -----
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # ----- Step 2 (Optional): Build your Docker image -----
       - name: Build Docker Image
         run: |
-          docker build -t fcs-test-image:latest -f Dockerfile.image-test .     # ⬅️ CHANGE: your Dockerfile path/tag
+          docker build -t fcs-test-image:latest -f Dockerfile.image-test .
 
-      # ----- Step 3: Run the CrowdStrike Image scan -----
       - name: Run FCS Image Assessment
         id: fcs
         uses: crowdstrike/fcs-action@v3.0.0
@@ -45,66 +33,92 @@ jobs:
           falcon_client_id: ${{ vars.FALCON_CLIENT_ID }}
           falcon_region: ${{ vars.FALCON_REGION }}
           scan_type: image
-          image: 'fcs-test-image:latest'                # ⬅️ CHANGE: image to scan
-          minimum_severity: high                 # ← Report high + critical CVEs
-          report_formats: 'sarif'
-          output_path: './image-scan-results.sarif'
+          image: 'fcs-test-image:latest'
+          minimum_severity: high
+          report_formats: 'json'
+          output_path: './image-scan-results.json'
           upload_results: true
         env:
           FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
 
-      # ----- Step 4: DEBUG — Check exit code and output -----
       - name: Debug Exit Code
         if: always()
         run: |
           echo "==========================================="
-          echo "  FCS Action Step Exit Code: $?"
-          echo "  FCS CLI Output Exit Code:  ${{ steps.fcs.outputs.exit-code }}"
+          echo "  FCS CLI Exit Code: ${{ steps.fcs.outputs.exit-code }}"
           echo "==========================================="
+          if [ -f "./image-scan-results.json" ]; then
+            echo "=== JSON report preview ==="
+            head -100 ./image-scan-results.json
+          fi
 
-      # ----- Step 5: Save reports for download -----
       - name: Upload scan results as artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: fcs-image-scan-results
-          path: ./image-scan-results.sarif
+          path: ./image-scan-results.*
           if-no-files-found: warn
 
-      # ----- Step 6: Push findings to GitHub Security tab -----
+      - name: Run FCS Image Scan (SARIF)
+        id: fcs-sarif
+        if: always() && steps.fcs.outputs.exit-code != 0
+        uses: crowdstrike/fcs-action@v3.0.0
+        with:
+          falcon_client_id: ${{ vars.FALCON_CLIENT_ID }}
+          falcon_region: ${{ vars.FALCON_REGION }}
+          scan_type: image
+          image: 'fcs-test-image:latest'
+          minimum_severity: high
+          report_formats: 'sarif'
+          output_path: './image-scan-results.sarif'
+        env:
+          FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
+
       - name: Upload SARIF to GitHub Code Scanning
         if: always() && steps.fcs.outputs.exit-code != 0
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: ./image-scan-results.sarif
 
-      # ----- Step 7: ENFORCE — Fail the workflow based on exit-code -----
-      # This is the critical step: the FCS action itself always exits 0,
-      # but it sets outputs.exit-code to non-zero when vulns are found.
-      # We must MANUALLY fail the workflow based on that output.
-      - name: Image Scan Summary
+      - name: "Enforce Policy: critical=1, high=1"
         if: always()
         run: |
           EXIT_CODE="${{ steps.fcs.outputs.exit-code }}"
+
           echo "==========================================="
-          echo "  FCS Image Assessment Complete"
-          echo "  FCS CLI Exit Code: ${EXIT_CODE}"
-          echo "  Policy: minimum_severity=high"
+          echo "  FCS Image Assessment — Policy Check"
+          echo "==========================================="
+          echo "  FCS CLI Exit Code : ${EXIT_CODE}"
+          echo "  Policy            : Fail on ≥1 critical OR ≥1 high"
+          echo "  Image Scanned     : fcs-test-image:latest"
           echo "==========================================="
 
-          # Handle empty exit code (action may not have set it)
           if [ -z "${EXIT_CODE}" ]; then
-            echo "⚠️  WARNING: exit-code output is empty."
-            echo "   The FCS action may not have produced an exit code."
-            echo "   Check the 'Run FCS Image Assessment' step logs above."
+            echo ""
+            echo "⚠️  EXIT CODE IS EMPTY"
+            echo "   The FCS action did not produce an exit-code output."
+            echo "   Check the 'Run FCS Image Assessment' step logs."
+            echo ""
+            echo "❌ FAILING WORKFLOW — unable to verify image safety."
             exit 1
           fi
 
           if [ "${EXIT_CODE}" != "0" ]; then
-            echo "❌ IMAGE SCAN FAILED — Critical or High vulnerabilities detected!"
-            echo "   The image contains vulnerabilities at or above HIGH severity."
-            echo "   Review findings in the Security tab or download the artifact."
+            echo ""
+            echo "🔴 VULNERABILITIES DETECTED"
+            echo "   The image contains ≥1 critical or ≥1 high CVEs."
+            echo ""
+            echo "   Next steps:"
+            echo "   1. Check the Security tab for detailed findings"
+            echo "   2. Download the 'fcs-image-scan-results' artifact"
+            echo "   3. Review in the Falcon Console"
+            echo ""
+            echo "❌ IMAGE SCAN FAILED — Merge blocked."
             exit 1
           else
-            echo "✅ IMAGE SCAN PASSED — No critical or high vulnerabilities found."
+            echo ""
+            echo "🟢 NO HIGH/CRITICAL VULNERABILITIES FOUND"
+            echo ""
+            echo "✅ IMAGE SCAN PASSED — Safe to proceed."
           fi
